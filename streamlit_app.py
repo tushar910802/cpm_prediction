@@ -23,7 +23,12 @@ st.markdown("### Predict Cost Per Mille (CPM) for your advertising campaigns")
 # Load model and preprocessors
 @st.cache_resource
 def load_model():
+    """
+    Loads the trained model and its preprocessors from the pickle file.
+    """
     try:
+        # Construct the path to the model file
+        # This approach is more robust for deployment environments like Streamlit Cloud
         model_path = os.path.join(os.path.dirname(__file__), 'best_model.pkl')
         with open(model_path, 'rb') as f:
             model_data = pickle.load(f)
@@ -47,7 +52,7 @@ if model_data is not None:
     # Create two columns for input
     col1, col2 = st.columns(2)
     
-    # Define categorical options based on your data
+    # Define categorical options based on the new data
     categorical_options = {
         'Type': ['TrueView', 'Video', 'Display', 'Demand Gen'],
         'Subtype': ['Reach', 'Simple', 'Non Skippable', 'View', 'Demand Gen', 'Audio'],
@@ -57,9 +62,7 @@ if model_data is not None:
         'Frequency_Period': ['Days', 'Minutes'],
         'Bid_Strategy_Type': ['None', 'TrueValue', 'Maximize', 'Minimize', 'Fixed'],
         'Optimized_Targeting': ['None', 'False', 'True'],
-        # START: ADDED LINES
-        'Bid_Strategy_Unit': ['None', 'Unknown', 'AV_VIEWED', 'CPC'] 
-        # END: ADDED LINES
+        'Bid_Strategy_Unit': ['None', 'Unknown', 'AV_VIEWED', 'CPC']
     }
     
     with col1:
@@ -90,13 +93,11 @@ if model_data is not None:
             help="Select pacing strategy"
         )
         
-        # START: ADDED LINES
         bid_strategy_unit = st.selectbox(
             "Bid Strategy Unit",
             options=categorical_options['Bid_Strategy_Unit'],
             help="Select the unit for the bid strategy"
         )
-        # END: ADDED LINES
 
     with col2:
         st.subheader("⚙️ Campaign Settings")
@@ -124,8 +125,7 @@ if model_data is not None:
             options=categorical_options['Optimized_Targeting'],
             help="Select optimized targeting option"
         )
-
-        # START: ADDED LINES
+        
         bid_strategy_value = st.number_input(
             "Bid Strategy Value",
             value=0.0,
@@ -133,7 +133,6 @@ if model_data is not None:
             format="%.2f",
             help="Enter the value for the bid strategy (0 if not applicable)"
         )
-        # END: ADDED LINES
     
     # Numerical inputs
     st.subheader("🔢 Numerical Parameters")
@@ -159,15 +158,16 @@ if model_data is not None:
     
     # Prediction function
     def predict_cpm(input_data):
+        """
+        Processes user input and makes a CPM prediction using the loaded model.
+        """
         try:
             # Create DataFrame from input
             df_input = pd.DataFrame([input_data])
             
-            # START: MODIFIED LINES
             # Handle missing values and ensure correct data types
             for col in ['Bid_Strategy_Type', 'Optimized_Targeting', 'Bid_Strategy_Unit']:
                 df_input[col] = df_input[col].fillna('None').astype(str)
-            # END: MODIFIED LINES
             df_input['Bid_Strategy_Value'] = df_input['Bid_Strategy_Value'].fillna(0.0)
 
             # Re-create all engineered features used in the training script
@@ -175,7 +175,6 @@ if model_data is not None:
             df_input['has_bid_strategy'] = (df_input['Bid_Strategy_Type'] != 'None').astype(int)
             df_input['pacing_per_exposure'] = df_input['Pacing_Amount'] / (df_input['Frequency_Exposures'] + 1)
             
-            # START: ADDED LINES
             df_input['has_optimized_targeting'] = (df_input['Optimized_Targeting'] != 'None').astype(int)
             df_input['has_bid_strategy_unit'] = (df_input['Bid_Strategy_Unit'] != 'None').astype(int)
             df_input['has_bid_strategy_value'] = (df_input['Bid_Strategy_Value'] > 0).astype(int)
@@ -184,13 +183,13 @@ if model_data is not None:
             df_input['sqrt_pacing_amount'] = np.sqrt(df_input['Pacing_Amount'])
             df_input['frequency_squared'] = df_input['Frequency_Exposures'] ** 2
             
-            # Interaction features
+            # Interaction features (initialized with zeros)
             df_input['type_subtype_interaction'] = 0
             df_input['budget_pacing_interaction'] = df_input['Pacing_Amount'] * 0
             df_input['frequency_pacing_interaction'] = df_input['Frequency_Exposures'] * df_input['Pacing_Amount']
             df_input['bid_strategy_value_interaction'] = df_input['Bid_Strategy_Value'] * df_input['has_bid_strategy']
             df_input['targeting_pacing_interaction'] = df_input['has_optimized_targeting'] * df_input['Pacing_Amount']
-            
+
             # Binning features (simplified for single prediction)
             pacing_amount = df_input['Pacing_Amount'].iloc[0]
             if pacing_amount <= 10:
@@ -206,21 +205,23 @@ if model_data is not None:
             df_input['pacing_amount_bin_encoded'] = pacing_bin_encoded
 
             bid_value = df_input['Bid_Strategy_Value'].iloc[0]
-            if bid_value == 0:
-                bid_value_bin_encoded = 0
-            else:
-                bid_value_bin_encoded = 1
+            bid_value_bin_encoded = 1 if bid_value > 0 else 0
             df_input['bid_value_bin_encoded'] = bid_value_bin_encoded
-            # END: ADDED LINES
-
-            # Encode categorical variables
+            
+            # Encode categorical variables AFTER all raw columns are ready
             for col, le in label_encoders.items():
-                if f'{col}_encoded' in feature_columns:
+                if f'{col}_encoded' in feature_columns and col in df_input.columns and le is not None:
                     try:
                         df_input[f'{col}_encoded'] = le.transform(df_input[col].astype(str))
                     except ValueError:
                         df_input[f'{col}_encoded'] = 0
-
+            
+            # Now that the encoded columns exist, we can create the interaction features correctly
+            if 'type_subtype_interaction' in feature_columns:
+                df_input['type_subtype_interaction'] = df_input['Type_encoded'] * df_input['Subtype_encoded']
+            if 'budget_pacing_interaction' in feature_columns:
+                df_input['budget_pacing_interaction'] = df_input['Budget_Type_encoded'] * df_input['Pacing_Amount']
+            
             # Select features for prediction
             X_input = df_input[feature_columns]
             
@@ -255,10 +256,8 @@ if model_data is not None:
             'Frequency_Period': frequency_period,
             'Bid_Strategy_Type': bid_strategy,
             'Optimized_Targeting': optimized_targeting,
-            # START: ADDED LINES
             'Bid_Strategy_Unit': bid_strategy_unit,
             'Bid_Strategy_Value': bid_strategy_value
-            # END: ADDED LINES
         }
         
         # Make prediction
@@ -276,21 +275,19 @@ if model_data is not None:
                 )
             
             with col6:
-                # Calculate estimated cost for 1000 impressions
-                estimated_cost_1k = predicted_cpm
+                lower_bound = predicted_cpm * 0.9
                 st.metric(
-                    label="Cost per 1K Impressions",
-                    value=f"${estimated_cost_1k:.2f}",
-                    help="Cost for 1,000 impressions"
+                    label="CPM Lower Bound (-10%)",
+                    value=f"${lower_bound:.2f}",
+                    help="CPM lower bound (10% below predicted)"
                 )
             
             with col7:
-                # Calculate estimated cost for 10k impressions
-                estimated_cost_10k = predicted_cpm * 10
+                upper_bound = predicted_cpm * 1.1
                 st.metric(
-                    label="Cost per 10K Impressions",
-                    value=f"${estimated_cost_10k:.2f}",
-                    help="Cost for 10,000 impressions"
+                    label="CPM Upper Bound (+10%)",
+                    value=f"${upper_bound:.2f}",
+                    help="CPM upper bound (10% above predicted)"
                 )
             
             # Show input summary
